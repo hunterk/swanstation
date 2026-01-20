@@ -896,8 +896,13 @@ float4 SampleFromVRAM(uint4 texpage, float2 coords)
       #endif
     #endif
 
-    // Compute output alpha (mask bit)
-    oalpha = float(u_set_mask_while_drawing ? 1 : int(semitransparent));
+    // Compute output alpha (mask bit or PGXP depth)
+    #if PGXP_DEPTH
+      // Output normalized depth value to alpha channel
+      oalpha = v_pos.z;
+    #else
+      oalpha = float(u_set_mask_while_drawing ? 1 : int(semitransparent));
+    #endif
   #else
     // All pixels are semitransparent for untextured polygons.
     semitransparent = true;
@@ -913,7 +918,12 @@ float4 SampleFromVRAM(uint4 texpage, float2 coords)
     #endif
 
     // However, the mask bit is cleared if set mask bit is false.
-    oalpha = float(u_set_mask_while_drawing);
+    #if PGXP_DEPTH
+      // Output normalized depth value to alpha channel
+      oalpha = v_pos.z;
+    #else
+      oalpha = float(u_set_mask_while_drawing);
+    #endif
   #endif
 
   // Premultiply alpha so we don't need to use a colour output for it.
@@ -1008,10 +1018,13 @@ std::string GPU_HW_ShaderGen::GenerateDisplayFragmentShader(bool depth_24bit,
   DefineMacro(ss, "INTERLACED", interlace_mode != GPU_HW::InterlacedRenderMode::None);
   DefineMacro(ss, "INTERLEAVED", interlace_mode == GPU_HW::InterlacedRenderMode::InterleavedFields);
   DefineMacro(ss, "SMOOTH_CHROMA", smooth_chroma);
+  DefineMacro(ss, "PGXP_DEPTH", m_pgxp_depth);
 
   WriteCommonFunctions(ss);
   DeclareUniformBuffer(ss, {"uint2 u_vram_offset", "uint u_crop_left", "uint u_field_offset"}, true);
   DeclareTexture(ss, "samp0", 0, UsingMSAA());
+  // Always declare depth sampler since we bind it conditionally
+  DeclareTexture(ss, "samp_depth", 1, false);
 
   ss << R"(
 float3 RGBToYUV(float3 rgb)
@@ -1116,6 +1129,18 @@ float3 SampleVRAM24Smoothed(uint2 icoords)
   #else
     o_col0 = float4(LoadVRAM(int2((icoords + u_vram_offset) % VRAM_SIZE)).rgb, 1.0);
   #endif
+
+  // Pack PGXP depth into alpha channel
+  // The depth is already in VRAM's alpha channel from batch rendering (when PGXP_DEPTH is enabled)
+  int2 vram_coords = int2((icoords + u_vram_offset) % VRAM_SIZE);
+  float depth_value = LoadVRAM(vram_coords).a;
+  
+  // Invert depth (closer objects = higher values) and remap to full range for better precision
+  // Most depth values are in the 0.25-0.75 range, so we expand that to 0-1
+  depth_value = 1.0 - depth_value;  // Invert
+  //depth_value = clamp((depth_value - 0.25) / 0.5, 0.0, 1.0);  // Remap 0.25-0.75 to 0-1, clamp edges
+  
+  o_col0.a = depth_value;
 }
 )";
 

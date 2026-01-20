@@ -173,6 +173,7 @@ private:
 
   Vulkan::Texture m_vram_texture;
   Vulkan::Texture m_vram_depth_texture;
+  Vulkan::Texture m_vram_depth_readable_texture;  // Readable depth as R16F for shader sampling
   Vulkan::Texture m_vram_read_texture;
   Vulkan::Texture m_vram_readback_texture;
   Vulkan::StagingTexture m_vram_readback_staging_texture;

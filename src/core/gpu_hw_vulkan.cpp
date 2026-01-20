@@ -323,7 +323,7 @@ layout(location = 0) out vec4 o_col0;
 
 void main()
 {
-  o_col0 = vec4(texture(samp0, v_tex0).rgb, 1.0);
+  o_col0 = texture(samp0, v_tex0);  // Preserve alpha channel
 }
 )";
 
@@ -1036,6 +1036,8 @@ bool GPU_HW_Vulkan::CreatePipelineLayouts()
 
   // textures start at 1
   dslbuilder.AddBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+  // Add depth binding for display shaders
+  dslbuilder.AddBinding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
   m_single_sampler_descriptor_set_layout = dslbuilder.Create(device);
   if (m_single_sampler_descriptor_set_layout == VK_NULL_HANDLE)
     return false;
@@ -1127,6 +1129,7 @@ bool GPU_HW_Vulkan::CreateFramebuffer()
   const u32 texture_height = VRAM_HEIGHT * m_resolution_scale;
   const VkFormat texture_format = VK_FORMAT_R8G8B8A8_UNORM;
   const VkFormat depth_format = VK_FORMAT_D16_UNORM;
+  const VkFormat depth_readable_format = VK_FORMAT_R16_SFLOAT;  // Readable depth format
   const VkSampleCountFlagBits samples = static_cast<VkSampleCountFlagBits>(m_multisamples);
 
   if (!m_vram_texture.Create(texture_width, texture_height, 1, 1, texture_format, samples, VK_IMAGE_VIEW_TYPE_2D,
@@ -1135,7 +1138,12 @@ bool GPU_HW_Vulkan::CreateFramebuffer()
                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
       !m_vram_depth_texture.Create(texture_width, texture_height, 1, 1, depth_format, samples, VK_IMAGE_VIEW_TYPE_2D,
                                    VK_IMAGE_TILING_OPTIMAL,
-                                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
+                                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                     VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
+      !m_vram_depth_readable_texture.Create(texture_width, texture_height, 1, 1, depth_readable_format, VK_SAMPLE_COUNT_1_BIT,
+                                            VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
       !m_vram_read_texture.Create(texture_width, texture_height, 1, 1, texture_format, VK_SAMPLE_COUNT_1_BIT,
                                   VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
                                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
@@ -1216,6 +1224,9 @@ bool GPU_HW_Vulkan::CreateFramebuffer()
   dsubuilder.AddCombinedImageSamplerDescriptorWrite(m_vram_copy_descriptor_set, 1, m_vram_read_texture.GetView(),
                                                     m_point_sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   dsubuilder.AddCombinedImageSamplerDescriptorWrite(m_vram_read_descriptor_set, 1, m_vram_texture.GetView(),
+                                                    m_point_sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  // Bind readable depth texture for display rendering (not the depth format texture)
+  dsubuilder.AddCombinedImageSamplerDescriptorWrite(m_vram_read_descriptor_set, 2, m_vram_depth_readable_texture.GetView(),
                                                     m_point_sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
   dsubuilder.AddCombinedImageSamplerDescriptorWrite(m_display_descriptor_set, 1, m_display_texture.GetView(),
                                                     m_point_sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1373,6 +1384,7 @@ void GPU_HW_Vulkan::DestroyFramebuffer()
 
   m_vram_read_texture.Destroy(false);
   m_vram_depth_texture.Destroy(false);
+  m_vram_depth_readable_texture.Destroy(false);
   m_vram_texture.Destroy(false);
   m_vram_readback_texture.Destroy(false);
   m_display_texture.Destroy(false);
@@ -2023,7 +2035,7 @@ void GPU_HW_Vulkan::UpdateDisplay()
     {
       m_host_display->ClearDisplayTexture();
     }
-    else if (!m_GPUSTAT.display_area_color_depth_24 && interlaced == InterlacedRenderMode::None &&
+    else if (!m_pgxp_depth_buffer && !m_GPUSTAT.display_area_color_depth_24 && interlaced == InterlacedRenderMode::None &&
              !IsUsingMultisampling() && (scaled_vram_offset_x + scaled_display_width) <= m_vram_texture.GetWidth() &&
              (scaled_vram_offset_y + scaled_display_height) <= m_vram_texture.GetHeight())
     {
@@ -2051,6 +2063,8 @@ void GPU_HW_Vulkan::UpdateDisplay()
 
       m_display_texture.TransitionToLayout(cmdbuf, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
       m_vram_texture.TransitionToLayout(cmdbuf, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      // Always transition readable depth for display rendering
+      m_vram_depth_readable_texture.TransitionToLayout(cmdbuf, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
       BeginRenderPass((interlaced != InterlacedRenderMode::None) ? m_display_load_render_pass :
                                                                    m_display_discard_render_pass,
@@ -2071,6 +2085,8 @@ void GPU_HW_Vulkan::UpdateDisplay()
 
       m_vram_texture.TransitionToLayout(cmdbuf, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
       m_display_texture.TransitionToLayout(cmdbuf, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      // Readable depth stays in shader read only (it's not a depth attachment)
+      m_vram_depth_readable_texture.TransitionToLayout(cmdbuf, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
       if (IsUsingDownsampling())
       {
