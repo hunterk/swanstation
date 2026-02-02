@@ -1130,15 +1130,17 @@ float3 SampleVRAM24Smoothed(uint2 icoords)
     o_col0 = float4(LoadVRAM(int2((icoords + u_vram_offset) % VRAM_SIZE)).rgb, 1.0);
   #endif
 
-  // Pack PGXP depth into alpha channel
-  // The depth is already in VRAM's alpha channel from batch rendering (when PGXP_DEPTH is enabled)
-  int2 vram_coords = int2((icoords + u_vram_offset) % VRAM_SIZE);
-  float depth_value = LoadVRAM(vram_coords).a;
-  
-  // Invert depth (closer objects = higher values) and store in alpha channel
-  depth_value = 1.0 - depth_value;
-  
-  o_col0.a = depth_value;
+  #if PGXP_DEPTH
+    // Pack PGXP depth into alpha channel
+    // The depth is already in VRAM's alpha channel from batch rendering
+    int2 vram_coords = int2((icoords + u_vram_offset) % VRAM_SIZE);
+    float depth_value = LoadVRAM(vram_coords).a;
+    
+    // Invert depth (closer objects = higher values) and store in alpha channel
+    depth_value = 1.0 - depth_value;
+    
+    o_col0.a = depth_value;
+  #endif
 }
 )";
 

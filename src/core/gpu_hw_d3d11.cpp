@@ -1281,7 +1281,7 @@ void GPU_HW_D3D11::UpdateDisplay()
     {
       m_host_display->ClearDisplayTexture();
     }
-    else if (!m_GPUSTAT.display_area_color_depth_24 && interlaced == InterlacedRenderMode::None &&
+    else if (!m_pgxp_depth_buffer && !m_GPUSTAT.display_area_color_depth_24 && interlaced == InterlacedRenderMode::None &&
              !IsUsingMultisampling() && (scaled_vram_offset_x + scaled_display_width) <= m_vram_texture.GetWidth() &&
              (scaled_vram_offset_y + scaled_display_height) <= m_vram_texture.GetHeight())
     {
